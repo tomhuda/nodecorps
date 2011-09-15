@@ -1,7 +1,9 @@
 require("./sproutcore-runtime");
 var fs = require("fs");
 var app = require('express').createServer();
+var watch = require("watch");
 
+// use `App =` to get better debug output.
 var App = SC.Namespace.create();
 
 App.File = SC.Object.extend({
@@ -10,13 +12,18 @@ App.File = SC.Object.extend({
     var self = this;
 
     fs.stat(path, function(err, result) { self.set('stat', result); });
-    fs.readFile(path, "UTF-8", function(err, result) { self.set('body', result); });
     fs.realpath(path, function(err, result) { self.set('realpath', result); });
+
+    watch.createMonitor(path, { interval: 1 }, function(monitor) {
+      monitor.on("created", function(f, stat) {
+        self.set('latestFile', f);
+      });
+    })
   },
 
   isLoaded: function() {
-    return this.get('stat') && this.get('body') && this.get('realpath');
-  }.property('stat', 'body', 'realpath'),
+    return this.get('stat') && this.get('realpath');
+  }.property('stat', 'realpath'),
 
   json: function() {
     var loaded = this.get('isLoaded');
@@ -24,11 +31,11 @@ App.File = SC.Object.extend({
     if (loaded) {
       return JSON.stringify({
         stat: this.get('stat'),
-        body: this.get('body'),
-        realpath: this.get('realpath')
+        realpath: this.get('realpath'),
+        latestFile: this.get('latestFile') || null
       })
     }
-  }.property('isLoaded').cacheable()
+  }.property('isLoaded', 'latestFile').cacheable()
 });
 
 App.JSONP = SC.Object.extend({
@@ -60,8 +67,31 @@ App.FileJSON = SC.Object.extend({
   }.observes('json'),
 });
 
-app.get("/file/:path", function(req, res) {
-  new App.FileJSON(req.params.path, function(json) { res.send(json); });
+var app = require('express').createServer(),
+    io = require('socket.io').listen(app);
+
+/**
+ * Serve files
+ */
+app.listen(9292);
+
+app.get('/', function(req, res) {
+  res.sendfile(__dirname + "/index.html");
 });
 
-app.listen(3000);
+
+app.get('*', function(req, res) {
+  res.sendfile(__dirname + req.params[0]);
+});
+
+/**
+ * Socket I/O
+ */
+var appFile = new App.FileJSON("images", function(json) {
+  console.log(json);
+  io.sockets.emit('input', json);
+});
+
+io.sockets.on('connection', function(socket) {
+  socket.emit('input', appFile.get('json'));
+});
